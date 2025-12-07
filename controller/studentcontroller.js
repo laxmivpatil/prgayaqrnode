@@ -1,71 +1,73 @@
- const StudentFinal= require('../model/student');
-const Scanlist= require('../model/scanlistmodel');
-const FamilyMember= require('../model/familymember');
+const StudentFinal = require("../model/student");
+const Scanlist = require("../model/scanlistmodel");
+const FamilyMember = require("../model/familymember");
 
- exports.readdata = (req, res, next) => {
-    const id=req.body.id;
-    const familymemberid=req.body.familymemberid;
-    let loadedStudent;
-    let familydata;
-    let newScanlist;
-    loadedStudent=StudentFinal.findOne({_id:id})
-    .then(student => {
-      if (!student) {
-        return res.status(404).json({
-          message: "Student not found",
-        });
-      }
-      console.log(student)
-      loadedStudent=student
-      return student.save()
-    }).then(familymember=>{
-        familydata=FamilyMember.findOne({_id:familymemberid})
-       .then(member => {
-      if (!member) {
-        return res.status(404).json({
-          message: "Member not found",
-        });
-      }
-      if(member.qrcoderead==false){
-        member.qrcoderead=true;
-      member.save();
-      console.log(member)
-       newScanlist = new Scanlist({
-        studentname: loadedStudent.studentname,
-        studentid: loadedStudent.studentid,
-        studentclass: loadedStudent.studentclass,
-        studentrollno: loadedStudent.studentrollno,
-        studentsection: loadedStudent.studentsection,
-        familymember: member._id,
+// ✅ Scan QR
+exports.readdata = async (req, res, next) => {
+  try {
+    const { id, familymemberid } = req.body;
+
+    if (!id || !familymemberid) {
+      return res.status(400).json({
+        message: "Student id and familymemberid are required",
       });
-
-      newScanlist.save();
-
-      console.log("member");
-
-      console.log(member);
-      Scanlist.find({_id:newScanlist._id}).populate('student').populate('familymember').then(result=>{
-        return res.status(200).json({
-            message: "Student found", familymember:member
-          });
-     })
-    }else{
-        return res.status(200).json({
-            message: "Already Scanned code",familymember:member
-          });
     }
-      
-    })
-   
-    })
-    .catch(err => {
-    if (!err.statusCode) {
-        err.statusCode = 500;
+
+    // 1) Find student
+    const student = await StudentFinal.findById(id);
+    if (!student) {
+      return res.status(404).json({ message: "Student not found" });
     }
-    next(err);
+
+    // 2) Find family member
+    const member = await FamilyMember.findById(familymemberid);
+    if (!member) {
+      return res.status(404).json({ message: "Member not found" });
+    }
+
+    // 3) Already scanned
+    if (member.qrcoderead === true) {
+      return res.status(200).json({
+        message: "Already Scanned code",
+        familymember: member,
+      });
+    }
+
+    // 4) Update member scan status
+    member.qrcoderead = true;
+    await member.save();
+
+    // 5) Create scan entry
+    const newScanlist = new Scanlist({
+      studentname: student.studentname,
+      studentid: student.studentid,
+      studentclass: student.studentclass,
+      studentrollno: student.studentrollno,
+      studentsection: student.studentsection,
+      familymember: member._id,
     });
+
+    await newScanlist.save();
+
+    // 6) Optional populate familymember
+    const scanResult = await Scanlist.findById(newScanlist._id)
+      .populate("familymember", "membername memberrelation");
+
+    return res.status(200).json({
+      message: "Student found",
+      familymember: member,
+      scan: scanResult,
+    });
+
+  } catch (err) {
+    console.error("Error in readdata:", err);
+    if (!err.statusCode) err.statusCode = 500;
+    next(err);
+  }
 };
- 
+
+
+// ✅ Reset QR read status
 exports.readdatafalse = async (req, res) => {
   try {
     const { familymemberid } = req.body;
@@ -74,14 +76,12 @@ exports.readdatafalse = async (req, res) => {
       return res.status(400).json({ message: "Family Member ID is required" });
     }
 
-    // Find member
     const member = await FamilyMember.findById(familymemberid);
 
     if (!member) {
       return res.status(404).json({ message: "Family member not found" });
     }
 
-    // Update only if true
     if (member.qrcoderead === true) {
       member.qrcoderead = false;
       await member.save();
@@ -92,7 +92,6 @@ exports.readdatafalse = async (req, res) => {
       });
     }
 
-    // Already false
     return res.status(200).json({
       message: "QR Status already false",
       member,
@@ -104,17 +103,20 @@ exports.readdatafalse = async (req, res) => {
   }
 };
 
-//using pagination
+
+// ✅ Pagination + Filter
 exports.getScanFiltteredDataWithPagination = async (req, res, next) => {
-  const { studentname, studentsection, studentclass, page } = req.body;
-  const currentPage = parseInt(page) || 1; // Default to page 1 if not provided
-  const limit = 10; // Number of entries per page
-  let totalScans;
   try {
-    // Build the filter object
-    let filter = {};
+    const { studentname, studentsection, studentclass, page } = req.body;
+
+    const currentPage = parseInt(page) || 1;
+    const limit = 10;
+    const skip = (currentPage - 1) * limit;
+
+    const filter = {};
+
     if (studentname) {
-      filter.studentname = { $regex: new RegExp(`^${studentname}`, "i") }; // Case-insensitive regex
+      filter.studentname = { $regex: new RegExp(`^${studentname}`, "i") };
     }
     if (studentsection) {
       filter.studentsection = studentsection;
@@ -123,35 +125,32 @@ exports.getScanFiltteredDataWithPagination = async (req, res, next) => {
       filter.studentclass = studentclass;
     }
 
-    const count = await Scanlist.countDocuments();
-    // Use MongoDB query optimizations
-    const skip = (currentPage - 1) * limit;
-
-    // Fetch data with pagination, filtering, and sorting
-    const [scannedList, totalCount] = await Promise.all([
+    const [totalscans, scannedList, totalCount] = await Promise.all([
+      Scanlist.countDocuments(),
       Scanlist.find(filter)
-        .populate("familymember", "membername memberrelation") // Only populate membername and relation
+        .populate("familymember", "membername memberrelation")
         .sort({ createdAt: -1 })
         .skip(skip)
         .limit(limit)
-        .select("studentid studentname studentclass studentsection studentrollno"), // Only select the required fields for student
-      Scanlist.countDocuments(filter), // Get total count for pagination metadata
+        .select("studentid studentname studentclass studentsection studentrollno familymember"),
+      Scanlist.countDocuments(filter),
     ]);
 
-    // Prepare response
-    res.status(200).json({
+    return res.status(200).json({
       message: "Studentlist fetched successfully.",
-      totalscans: count,
+      totalscans,
       scannedlist: scannedList.map(scan => ({
-        studentid:scan.studentid,
+        studentid: scan.studentid,
         studentname: scan.studentname,
         studentclass: scan.studentclass,
         studentsection: scan.studentsection,
         studentrollno: scan.studentrollno,
-        familymember: {
-          membername: scan.familymember.membername,
-          relation: scan.familymember.memberrelation
-        }
+        familymember: scan.familymember
+          ? {
+              membername: scan.familymember.membername,
+              relation: scan.familymember.memberrelation,
+            }
+          : null,
       })),
       pagination: {
         currentPage,
@@ -160,11 +159,10 @@ exports.getScanFiltteredDataWithPagination = async (req, res, next) => {
         entriesPerPage: limit,
       },
     });
+
   } catch (err) {
     console.error(err);
-    if (!err.statusCode) {
-      err.statusCode = 500;
-    }
+    if (!err.statusCode) err.statusCode = 500;
     next(err);
   }
 };
