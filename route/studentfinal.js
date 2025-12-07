@@ -1,14 +1,15 @@
-const express = require('express');
-// const { body } = require('express-validator');
-// const auth = require('../middleware/is-auth');
-// const upload = require("../middleware/upload");
-const studentFinalController = require('../controller/studentcontroller');
+const express = require("express");
+const studentFinalController = require("../controller/studentcontroller");
 
 const router = express.Router();
 
-router.post('/readdata',studentFinalController.readdata);
-router.post('/readdatafalse',studentFinalController.readdatafalse);
-router.get('/getScanFiltteredDataWithPagination',studentFinalController.getScanFiltteredDataWithPagination);
-// router.get('/getPetByCategory/:category',upload.single("file"), petController.getPetByCategory);
+router.post("/readdata", studentFinalController.readdata);
+router.post("/readdatafalse", studentFinalController.readdatafalse);
+
+// ✅ changed GET → POST (because controller reads req.body)
+router.post(
+  "/getScanFiltteredDataWithPagination",
+  studentFinalController.getScanFiltteredDataWithPagination
+);
 
 module.exports = router;
